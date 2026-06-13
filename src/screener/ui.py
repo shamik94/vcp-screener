@@ -99,11 +99,28 @@ st.sidebar.title("VCP Screener")
 country = st.sidebar.selectbox("Country", list(COUNTRY_THRESHOLDS.keys()), index=0)
 as_of = st.sidebar.date_input("As of", value=date_cls.today())
 mode = st.sidebar.radio("Mode", ["Heuristic", "Trend", "VCP (LLM)"], index=0)
+
+# Load info early so sector/industry options can be populated in sidebar.
+info = load_info(country)
+_all_sectors = sorted(info["sector"].dropna().unique().tolist()) if not info.empty else []
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Filters**")
 min_rs = st.sidebar.slider("Min RS rank", 0, 100, 70)
 max_avg_range = st.sidebar.slider(
     "Max window avg range (heuristic/VCP)", 0.01, 0.30, 0.10, 0.005,
     help="Average per-bar (high-low)/close over the heuristic window. Ignored in Trend mode.",
 )
+symbol_search = st.sidebar.text_input("Symbol", placeholder="e.g. AAPL").upper().strip()
+selected_sectors = st.sidebar.multiselect("Sector", _all_sectors)
+# Industry list cascades from selected sectors.
+_industry_pool = (
+    info[info["sector"].isin(selected_sectors)] if selected_sectors else info
+)
+_all_industries = sorted(_industry_pool["industry"].dropna().unique().tolist()) if not _industry_pool.empty else []
+selected_industries = st.sidebar.multiselect("Industry", _all_industries)
+htf_only = st.sidebar.checkbox("HTF setups only")
+
 if st.sidebar.button("Refresh data", help="Clear cache and re-pull from Postgres"):
     load_pipeline.clear()
     load_info.clear()
@@ -115,7 +132,6 @@ if st.sidebar.button("Refresh data", help="Clear cache and re-pull from Postgres
 # ---------- Load ----------
 as_of_iso = as_of.isoformat()
 ohlcv, trend_pure, trend_vcp, heur = load_pipeline(country, as_of_iso)
-info = load_info(country)
 
 # ---------- Mode → source df + default sort ----------
 if mode == "Heuristic":
@@ -131,7 +147,7 @@ else:  # VCP (LLM)
     sort_col, sort_asc = "rs_rank", False
     apply_tightness_filter = True
 
-# Filters
+# Numeric filters
 src = src[src["rs_rank"] >= min_rs]
 if apply_tightness_filter and "window_avg_range_pct" in src.columns:
     src = src[src["window_avg_range_pct"] <= max_avg_range]
@@ -140,6 +156,16 @@ if apply_tightness_filter and "window_avg_range_pct" in src.columns:
 if not info.empty:
     src = src.merge(info, on="symbol", how="left")
 
+# Categorical / text filters (applied after merge so sector/industry columns exist)
+if symbol_search:
+    src = src[src["symbol"].str.contains(symbol_search, case=False, na=False)]
+if selected_sectors and "sector" in src.columns:
+    src = src[src["sector"].isin(selected_sectors)]
+if selected_industries and "industry" in src.columns:
+    src = src[src["industry"].isin(selected_industries)]
+if htf_only and "htf_flag" in src.columns:
+    src = src[src["htf_flag"].astype(bool)]
+
 display_cols = [
     "symbol", "sector", "industry", "close", "high_52w", "rs_rank",
     "window_avg_range_pct", "window_max_range_pct",
@@ -147,6 +173,13 @@ display_cols = [
 ]
 display_cols = [c for c in display_cols if c in src.columns]
 df_display = src[display_cols].sort_values(sort_col, ascending=sort_asc).reset_index(drop=True)
+
+# Reset chart navigation when the active filter set changes.
+_filter_key = (country, as_of_iso, mode, min_rs, max_avg_range,
+               symbol_search, tuple(selected_sectors), tuple(selected_industries), htf_only)
+if st.session_state.get("_filter_key") != _filter_key:
+    st.session_state["_filter_key"] = _filter_key
+    st.session_state.pop("selected_idx", None)
 
 # ---------- Header ----------
 st.title(f"{mode} — {country.upper()} — {as_of_iso}")
