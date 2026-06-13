@@ -1,0 +1,9 @@
+pandas>=2.1
+numpy>=1.26
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+mplfinance>=0.12.10b0
+litellm>=1.50
+pytest>=8.0
+python-dotenv>=1.0
+streamlit>=1.35
