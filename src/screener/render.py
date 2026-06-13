@@ -1,8 +1,8 @@
 """Stage 2: composite chart rendering via mplfinance.
 
 Produces one PNG per symbol with three panels:
-  - Top: weekly candles (2y), log scale, 10/30/40-week SMAs
-  - Middle: daily candles (~6m), SMA50/150/200, 52w-high pivot hline
+  - Top: daily candles (~6m), SMA50/150/200, 52w-high pivot hline
+  - Middle: weekly candles (2y), log scale, 10/30/40-week SMAs
   - Bottom: daily volume + 50d volume MA
 """
 from __future__ import annotations
@@ -74,8 +74,8 @@ def render_chart(df_daily: pd.DataFrame, symbol: str, out_path: Path) -> Path:
         top=0.96,
         bottom=0.05,
     )
-    ax_weekly = fig.add_subplot(gs[0])
-    ax_daily = fig.add_subplot(gs[1])
+    ax_daily = fig.add_subplot(gs[0])
+    ax_weekly = fig.add_subplot(gs[1])
     ax_vol = fig.add_subplot(gs[2])
 
     # --- Top: weekly with log scale + 10/30/40-week MAs ---

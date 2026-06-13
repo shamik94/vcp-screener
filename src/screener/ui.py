@@ -19,6 +19,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from src.screener import db
@@ -47,6 +48,11 @@ def load_pipeline(country: str, as_of_iso: str):
     return ohlcv, trend_pure, trend_vcp, heur
 
 
+@st.cache_data(show_spinner=False)
+def load_info(country: str) -> pd.DataFrame:
+    return db.load_stock_info(country)
+
+
 @st.cache_data(show_spinner="Rendering chart…")
 def get_chart_path(symbol: str, as_of_iso: str, _ohlcv: pd.DataFrame) -> str:
     """Render (or reuse) {symbol}.png for the given date. _ohlcv prefix skips hashing."""
@@ -57,6 +63,35 @@ def get_chart_path(symbol: str, as_of_iso: str, _ohlcv: pd.DataFrame) -> str:
         df_sym = _ohlcv[_ohlcv["symbol"] == symbol]
         render_chart(df_sym, symbol, path)
     return str(path)
+
+
+def _pie_charts(df: pd.DataFrame, label: str) -> None:
+    """Render side-by-side sector and industry pie charts for the given DataFrame."""
+    if df.empty:
+        return
+    has_sector = "sector" in df.columns
+    has_industry = "industry" in df.columns
+    if not has_sector and not has_industry:
+        return
+
+    st.subheader(f"{label} — Industry & Sector Breakdown")
+    col1, col2 = st.columns(2)
+
+    if has_sector:
+        counts = df["sector"].fillna("Unknown").value_counts().reset_index()
+        counts.columns = ["sector", "count"]
+        with col1:
+            fig = px.pie(counts, values="count", names="sector", title="By Sector")
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig, use_container_width=True)
+
+    if has_industry:
+        counts = df["industry"].fillna("Unknown").value_counts().reset_index()
+        counts.columns = ["industry", "count"]
+        with col2:
+            fig = px.pie(counts, values="count", names="industry", title="By Industry")
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig, use_container_width=True)
 
 
 # ---------- Sidebar ----------
@@ -71,13 +106,16 @@ max_avg_range = st.sidebar.slider(
 )
 if st.sidebar.button("Refresh data", help="Clear cache and re-pull from Postgres"):
     load_pipeline.clear()
+    load_info.clear()
     get_chart_path.clear()
     st.session_state.pop("watchlist", None)
+    st.session_state.pop("selected_idx", None)
     st.rerun()
 
 # ---------- Load ----------
 as_of_iso = as_of.isoformat()
 ohlcv, trend_pure, trend_vcp, heur = load_pipeline(country, as_of_iso)
+info = load_info(country)
 
 # ---------- Mode → source df + default sort ----------
 if mode == "Heuristic":
@@ -98,8 +136,12 @@ src = src[src["rs_rank"] >= min_rs]
 if apply_tightness_filter and "window_avg_range_pct" in src.columns:
     src = src[src["window_avg_range_pct"] <= max_avg_range]
 
+# Merge sector / industry
+if not info.empty:
+    src = src.merge(info, on="symbol", how="left")
+
 display_cols = [
-    "symbol", "close", "high_52w", "rs_rank",
+    "symbol", "sector", "industry", "close", "high_52w", "rs_rank",
     "window_avg_range_pct", "window_max_range_pct",
     "tightness_10d", "htf_flag",
 ]
@@ -130,6 +172,9 @@ event = st.dataframe(
     },
 )
 
+# ---------- Sector / Industry pie charts ----------
+_pie_charts(df_display, mode)
+
 # ---------- VCP grading button ----------
 if mode == "VCP (LLM)":
     settings = get_settings()
@@ -155,14 +200,38 @@ if mode == "VCP (LLM)":
             grades = grade_all_sync(reqs, out_dir=settings.out_dir, date_str=as_of_iso)
             st.session_state["watchlist"] = build_watchlist(grades, src)
     if "watchlist" in st.session_state:
+        watchlist = st.session_state["watchlist"].copy()
+        if not info.empty:
+            watchlist = watchlist.merge(info, on="symbol", how="left")
         st.subheader("Graded watchlist")
-        st.dataframe(st.session_state["watchlist"], width="stretch")
+        st.dataframe(watchlist, width="stretch")
+        _pie_charts(watchlist, "Watchlist")
 
 # ---------- Selected chart ----------
-selected_rows = event.selection.rows if event and event.selection else []
-if selected_rows:
-    symbol = df_display.iloc[selected_rows[0]]["symbol"]
-    st.subheader(f"{symbol}")
+# Sync dataframe click → session state, but not if a nav button just fired.
+df_selected_rows = event.selection.rows if event and event.selection else []
+nav_triggered = st.session_state.pop("_nav_triggered", False)
+if not nav_triggered and df_selected_rows:
+    st.session_state["selected_idx"] = df_selected_rows[0]
+
+selected_idx = st.session_state.get("selected_idx")
+if selected_idx is not None and selected_idx < len(df_display):
+    symbol = df_display.iloc[selected_idx]["symbol"]
+
+    col_prev, col_sym, col_next = st.columns([1, 10, 1])
+    with col_prev:
+        if st.button("◀", disabled=(selected_idx == 0), use_container_width=True):
+            st.session_state["selected_idx"] = selected_idx - 1
+            st.session_state["_nav_triggered"] = True
+            st.rerun()
+    with col_sym:
+        st.subheader(f"{symbol}  ({selected_idx + 1} / {len(df_display)})")
+    with col_next:
+        if st.button("▶", disabled=(selected_idx >= len(df_display) - 1), use_container_width=True):
+            st.session_state["selected_idx"] = selected_idx + 1
+            st.session_state["_nav_triggered"] = True
+            st.rerun()
+
     path = get_chart_path(symbol, as_of_iso, ohlcv)
     st.image(path)
 else:

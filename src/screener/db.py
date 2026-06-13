@@ -45,6 +45,22 @@ def load_ohlcv(country: str, *, as_of: date, lookback_days: int = 730) -> pd.Dat
     return df
 
 
+def load_stock_info(country: str) -> pd.DataFrame:
+    """Load sector and industry metadata for all symbols in a country.
+
+    Returns DataFrame with columns: symbol, sector, industry.
+    Returns empty DataFrame if stock_info table doesn't exist or has no data.
+    """
+    sql = text(
+        "SELECT symbol, sector, industry FROM stock_info WHERE country = :country"
+    )
+    try:
+        with get_engine().connect() as conn:
+            return pd.read_sql(sql, conn, params={"country": country})
+    except Exception:
+        return pd.DataFrame(columns=["symbol", "sector", "industry"])
+
+
 def latest_trading_date(country: str) -> date:
     sql = text("SELECT MAX(date) FROM stock_data WHERE country = :country")
     with get_engine().connect() as conn:
